@@ -31,6 +31,7 @@ using namespace std;
 DLLEXPORT void Initialize();
 DLLEXPORT void Run();
 DLLEXPORT void Cleanup();
+DLLEXPORT void __cdecl  initialStuff(void*);
 DLLEXPORT void __cdecl  hotkeyThread(void*);
 
 BOOL WINAPI OnConsoleSignal(DWORD dwCtrlType);
@@ -56,6 +57,12 @@ struct UFunction
 	DWORD64 fptr;
 };
 
+struct GI_MedievalDynasty_C
+{
+	char misc[0x53c];
+	byte Cheats;
+};
+
 
 void initInGameFunctions()
 {
@@ -78,8 +85,9 @@ DLLEXPORT void __cdecl Start(void*)
 		return;
 	}
 
-	printf("Initializing\n");
+	printf("Initializing....\n");
 	Initialize();
+	printf("Running....\n");
 	Run();
 	Cleanup();
 
@@ -128,74 +136,6 @@ LPCSTR GetProcessName(DWORD PID)
 
 void Initialize()
 {
-	HANDLE hMD = GetModuleHandleA(GetProcessName(::_getpid()));
-
-
-	if (!hMD)
-	{	
-		printf("ERROR: Getting handle to game\n");
-		return;
-	}
-
-	printf("Handle: %p\n", hMD);
-	printf("Base: %llx\n", (INT64)hMD);
-	//AoB signature courtesy of SunBeam
-	ScanData signature = ScanData("48 89 5C 24 ? 48 89 74 24 ? 55 57 41 54 41 56 41 57 48 8B EC 48 83 EC ? 80 3D ? ? ? ? 00 45 0F B6 F1 49 8B F8 48 8B DA 4C 8B F9 74");
-	ScanData data = ScanData(0x2000000);
-
-	memcpy(data.data, hMD, data.size);
-	uintptr_t offset = bruteForce(signature, data);
-	
-	MDGameFunctions.StaticFindObject = ((DWORD64)hMD + offset);
-	printf("staticfind: %llx\n", MDGameFunctions.StaticFindObject);
-	*(PDWORD64)&StaticFindObject = MDGameFunctions.StaticFindObject;
-
-	//unsigned char* p = (unsigned char*)&hMD;
-	//printf("b1: %x\n",p[0]);
-
-	//initKernelBaseFunctions();
-	//initInGameFunctions();
-
-	//ModuleCheckingThread();
-	UFunction* isb;
-	UFunction* idb;
-
-	DWORD64 ptr = 0;
-	
-	printf("Waiting for IsShippingBuild function to register.\n");
-	while (ptr == 0)
-	{
-		std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-		ptr = (DWORD64)StaticFindObject((DWORD64)0, (DWORD64)-1, L"TDBPL_IsShippingBuild", true);
-	}
-	
-	*(PDWORD64)&isb = ptr;
-
-	ptr = (DWORD64)StaticFindObject((DWORD64)0, (DWORD64)-1, L"TDBPL_IsDevelopmentBuild", true);
-	*(PDWORD64)&idb = ptr;
-		
-	DWORD64 retTrue = isb->fptr;
-	DWORD64 retFalse = idb->fptr;
-
-
-	printf("Setting IsShippingBuild = false, IsDevelopmentBuild = true.\n");
-	isb->fptr = retFalse;
-	idb->fptr = retTrue;
-
-
-	printf("isb.fptr: %llx\n", isb->fptr);
-	printf("idb.fptr: %llx\n", idb->fptr);
-
-	int err = GetLastError();
-	if (err == 0)
-	{
-		printf("\n\nNo errors detected.\nCheat Menu should now be available after loading/starting a game and pressing ESC.\n");
-	}
-	else
-	{
-		printf("\n\nError %d reported.  No clue what this means, let Wulf know the details.\n", err);
-	}
-	printf("This window will disappear shortly after the game exits.\n");
 	//_beginthread(&hotkeyThread, 0, 0);
 }
 void Cleanup()
@@ -205,6 +145,8 @@ void Cleanup()
 void Run()
 {
 	bRunning = true;
+
+	_beginthread(initialStuff, 0, 0);
 
 	while (bRunning)
 	{		
@@ -224,6 +166,86 @@ BOOL WINAPI OnConsoleSignal(DWORD dwCtrlType) {
 	return FALSE;
 }
 
+DLLEXPORT void __cdecl initialStuff(void*)
+{
+	printf("pid: %llx\n", ::_getpid());
+	printf("ProcessName: %s\n", GetProcessName(::_getpid()));
+	HANDLE hMD = GetModuleHandleA(GetProcessName(::_getpid()));
+
+	if (!hMD)
+	{
+		printf("ERROR: Getting handle to game\n");
+		return;
+	}
+
+	printf("Handle: %p\n", hMD);
+	printf("Base: %llx\n", (INT64)hMD);
+	//AoB signature courtesy of SunBeam
+	ScanData signature = ScanData("48 89 5C 24 ? 48 89 74 24 ? 55 57 41 54 41 56 41 57 48 8B EC 48 83 EC ? 80 3D ? ? ? ? 00 45 0F B6 F1 49 8B F8 48 8B DA 4C 8B F9 74");
+	ScanData data = ScanData(0x2000000);
+
+	memcpy(data.data, hMD, data.size);
+	uintptr_t offset = bruteForce(signature, data);
+
+	MDGameFunctions.StaticFindObject = ((DWORD64)hMD + offset);
+	*(PDWORD64)&StaticFindObject = MDGameFunctions.StaticFindObject;
+
+	UFunction* isb;
+	UFunction* idb;
+
+	DWORD64 ptr = 0;
+	printf("\n\nFinding the thing that should say 'Yes'....\n");
+	while (ptr == 0)
+	{
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		ptr = (DWORD64)StaticFindObject((DWORD64)0, (DWORD64)-1, L"TDBPL_IsShippingBuild", true);
+	}
+	*(PDWORD64)&isb = ptr;
+
+	ptr = 0;
+	printf("Finding the thing that should say 'No'....\n");
+	while (ptr == 0)
+	{
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		ptr = (DWORD64)StaticFindObject((DWORD64)0, (DWORD64)-1, L"TDBPL_IsDevelopmentBuild", true);
+	}
+	*(PDWORD64)&idb = ptr;
+
+	ptr = 0;
+	printf("Waiting for the universe to spring forth from nothingness....\n\n");
+	while (ptr == 0)
+	{
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		ptr = (DWORD64)StaticFindObject((DWORD64)0, (DWORD64)0, L"/Game/Blueprints/GI_MedievalDynasty.Default__GI_MedievalDynasty_C", false);
+	}
+
+	GI_MedievalDynasty_C* gi;
+	*(PDWORD64)&gi = ptr;
+	gi->Cheats = 1;
+	
+	DWORD64 retTrue = isb->fptr;
+	DWORD64 retFalse = idb->fptr;
+
+	printf("Making the thing that should say 'Yes' say 'No'.\n");
+	isb->fptr = retFalse;
+	printf("Making the thing that should say 'No' say 'Yes'.\n");
+	idb->fptr = retTrue;
+
+	printf("Asking the universe nicely for unlimited cosmic power.\n");
+
+
+	int err = GetLastError();
+	if (err == 0)
+	{
+		printf("\n\nNo errors detected.\nCheat Menu should now be available after loading/starting a game and pressing ESC.\n");
+	}
+	else
+	{
+		printf("\n\nError %d reported.  No clue what this means, let Wulf know the details.\n", err);
+	}
+	printf("\nThis window will disappear shortly after the game exits.\n");
+
+}
 DLLEXPORT void __cdecl hotkeyThread(void*)
 {
 	printf("hotkeyThread() called\n");
@@ -307,6 +329,48 @@ DLLEXPORT void __cdecl hotkeyThread(void*)
 				if (hk_Num2_Pressed == false) 
 				{
 					hk_Num2_Pressed = true;
+
+
+
+					HANDLE hMD = GetModuleHandleA(GetProcessName(::_getpid()));
+
+
+					if (!hMD)
+					{
+						printf("ERROR: Getting handle to game\n");
+						return;
+					}
+
+					printf("Handle: %p\n", hMD);
+					printf("Base: %llx\n", (INT64)hMD);
+					//AoB signature courtesy of SunBeam
+					ScanData signature = ScanData("48 89 5C 24 ? 48 89 74 24 ? 55 57 41 54 41 56 41 57 48 8B EC 48 83 EC ? 80 3D ? ? ? ? 00 45 0F B6 F1 49 8B F8 48 8B DA 4C 8B F9 74");
+					ScanData data = ScanData(0x2000000);
+
+					memcpy(data.data, hMD, data.size);
+					uintptr_t offset = bruteForce(signature, data);
+
+					MDGameFunctions.StaticFindObject = ((DWORD64)hMD + offset);
+					printf("staticfind: %llx\n", MDGameFunctions.StaticFindObject);
+					*(PDWORD64)&StaticFindObject = MDGameFunctions.StaticFindObject;
+
+					UFunction* icv;
+
+					DWORD64 ptr = 0;
+
+					ptr = 0;
+					printf("Waiting for IsCheatVersion function to register.\n");
+					while (ptr == 0)
+					{
+						std::this_thread::sleep_for(std::chrono::milliseconds(100));
+						ptr = (DWORD64)StaticFindObject((DWORD64)0, (DWORD64)-1, L"GI_MedievalDynasty.IsCheatVersion", true);
+					}
+					*(PDWORD64)&icv = ptr;
+
+					//printf("icv.fptr: %llx\n", icv->fptr);
+					printf("GI_MedievalDynasty.IsCheatVersion:      %llx\n", icv);
+
+
 				}
 					
 			}

@@ -34,3 +34,4 @@
 # Visual Studio
 .vs/
 x64/
+Private/
