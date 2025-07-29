@@ -44,9 +44,14 @@ typedef PDWORD64(WINAPI* tStaticFindObject)(DWORD64 cls, DWORD64 inout, wchar_t*
 PDWORD64 WINAPI hStaticFindObject(DWORD64 cls, DWORD64 input, wchar_t* obj, bool flag);
 tStaticFindObject StaticFindObject = NULL;
 
+typedef PDWORD64(WINAPI* tStaticConstructObject)(DWORD64 cls, DWORD64 inout);
+PDWORD64 WINAPI hStaticConstructObject(DWORD64 cls, DWORD64 inout);
+tStaticConstructObject StaticConstructObject = NULL;
+
 
 struct sMDGameFunctions
 {
+	DWORD64 StaticConstructObject;
 	DWORD64 StaticFindObject;
 };
 sMDGameFunctions MDGameFunctions;
@@ -59,9 +64,20 @@ struct UFunction
 
 struct GI_MedievalDynasty_C
 {
-	char misc[0x53c];
-	byte Cheats;
+	char misc[0x1b0];
+	int bDebugModeEnabled;
+	int gi1;
+	int gi2;
+	int gi3;
+	int gi4;
+	int gi5;
+	int DebugWidget; //0x1b8
+	char misc2[0x3b4];
+	byte TestVersion;
 };
+
+GI_MedievalDynasty_C* gi;
+GI_MedievalDynasty_C* cgi;
 
 
 void initInGameFunctions()
@@ -168,6 +184,7 @@ BOOL WINAPI OnConsoleSignal(DWORD dwCtrlType) {
 
 DLLEXPORT void __cdecl initialStuff(void*)
 {
+	std::this_thread::sleep_for(std::chrono::milliseconds(100));
 	printf("pid: %llx\n", ::_getpid());
 	printf("ProcessName: %s\n", GetProcessName(::_getpid()));
 	HANDLE hMD = GetModuleHandleA(GetProcessName(::_getpid()));
@@ -178,20 +195,31 @@ DLLEXPORT void __cdecl initialStuff(void*)
 		return;
 	}
 
+	//GEngine?
+	//48 ? ? 05 ? ? ? ? ? ? ? ? 48 ? ? 88 ? ? 07 00 00 48 ? ? 01 ? ? 90 ? ? 01 00 00
+
 	printf("Handle: %p\n", hMD);
 	printf("Base: %llx\n", (INT64)hMD);
 	//AoB signature courtesy of SunBeam
 	ScanData signature = ScanData("48 89 5C 24 ? 48 89 74 24 ? 55 57 41 54 41 56 41 57 48 8B EC 48 83 EC ? 80 3D ? ? ? ? 00 45 0F B6 F1 49 8B F8 48 8B DA 4C 8B F9 74");
 	ScanData data = ScanData(0x2000000);
-
 	memcpy(data.data, hMD, data.size);
 	uintptr_t offset = bruteForce(signature, data);
-
 	MDGameFunctions.StaticFindObject = ((DWORD64)hMD + offset);
 	*(PDWORD64)&StaticFindObject = MDGameFunctions.StaticFindObject;
 
+	signature = ScanData("48 89 5C 24 10 48 89 74 24 18 55 57 41 54 41 56 41 57 48 8D AC 24 50 FF FF FF 48 81 EC B0 01 00 00 48 8B ?? ?? ?? ?? ?? 48 33 C4 48 89 85 A8 00 00 00");
+	data = ScanData(0x2000000);
+	memcpy(data.data, hMD, data.size);
+	uintptr_t offset = bruteForce(signature, data);
+	MDGameFunctions.StaticConstructObject = ((DWORD64)hMD + offset);
+	*(PDWORD64)&StaticConstructObject = MDGameFunctions.StaticConstructObject;
+
+
 	UFunction* isb;
 	UFunction* idb;
+	UFunction* icv;
+	UFunction* itb;
 
 	DWORD64 ptr = 0;
 	printf("\n\nFinding the thing that should say 'Yes'....\n");
@@ -203,13 +231,21 @@ DLLEXPORT void __cdecl initialStuff(void*)
 	*(PDWORD64)&isb = ptr;
 
 	ptr = 0;
-	printf("Finding the thing that should say 'No'....\n");
+	printf("Finding the things that should say 'No'....\n");
 	while (ptr == 0)
 	{
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 		ptr = (DWORD64)StaticFindObject((DWORD64)0, (DWORD64)-1, L"TDBPL_IsDevelopmentBuild", true);
+		*(PDWORD64)&idb = ptr;
+		
+		ptr = (DWORD64)StaticFindObject((DWORD64)0, (DWORD64)-1, L"TDBPL_IsTestBuild", true);
+		*(PDWORD64)&itb = ptr;
+
+		ptr = (DWORD64)StaticFindObject((DWORD64)0, (DWORD64)-1, L"/Game/Blueprints/GI_MedievalDynasty.GI_MedievalDynasty_C:IsCheatVersion", true);
+		*(PDWORD64)&icv = ptr;
 	}
-	*(PDWORD64)&idb = ptr;
+	ptr = 0;
+	
 
 	ptr = 0;
 	printf("Waiting for the universe to spring forth from nothingness....\n\n");
@@ -219,19 +255,53 @@ DLLEXPORT void __cdecl initialStuff(void*)
 		ptr = (DWORD64)StaticFindObject((DWORD64)0, (DWORD64)0, L"/Game/Blueprints/GI_MedievalDynasty.Default__GI_MedievalDynasty_C", false);
 	}
 
-	GI_MedievalDynasty_C* gi;
+	
 	*(PDWORD64)&gi = ptr;
-	gi->Cheats = 1;
+	gi->bDebugModeEnabled = 1;
+	gi->TestVersion = 1;
 	
 	DWORD64 retTrue = isb->fptr;
 	DWORD64 retFalse = idb->fptr;
 
 	printf("Making the thing that should say 'Yes' say 'No'.\n");
 	isb->fptr = retFalse;
-	printf("Making the thing that should say 'No' say 'Yes'.\n");
+	printf("Making the things that should say 'No' say 'Yes'.\n");
+	icv->fptr = retTrue;
 	idb->fptr = retTrue;
+	itb->fptr = retTrue;
 
-	printf("Asking the universe nicely for unlimited cosmic power.\n");
+	//printf("Asking the universe nicely for unlimited cosmic power.\n");
+
+
+
+	ptr = 0;
+	printf("Waiting for the copied GI.....\n\n");
+	while (ptr == 0)
+	{
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		ptr = (DWORD64)StaticFindObject((DWORD64)0, (DWORD64)0, L"/Engine/Transient.GameEngine_2147482624:GI_MedievalDynasty_C_2147482607", false);
+	}
+
+	*(PDWORD64)&cgi = ptr;
+	
+	printf("gi: %llx\n", (INT64)gi);
+	printf("cgi: %llx\n", (INT64)cgi);
+
+	cgi->bDebugModeEnabled = 1;
+	cgi->TestVersion = 1;
+
+	//_beginthread(&hotkeyThread, 0, 0);
+
+
+	ptr = 0;
+	printf("Waiting for DebugWidget\n\n");
+	std::this_thread::sleep_for(std::chrono::milliseconds(7500));
+	while (gi->DebugWidget == 0)
+	{
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	cgi->DebugWidget = gi->DebugWidget;
+
 
 
 	int err = GetLastError();
@@ -248,7 +318,7 @@ DLLEXPORT void __cdecl initialStuff(void*)
 }
 DLLEXPORT void __cdecl hotkeyThread(void*)
 {
-	printf("hotkeyThread() called\n");
+	//printf("hotkeyThread() called\n");
 
 	bool hk_Enter_Pressed = false;
 	
@@ -299,6 +369,19 @@ DLLEXPORT void __cdecl hotkeyThread(void*)
 			hk_Numpad8 = GetKeyState(0x68);
 
 			hk_NumpadPlus = GetKeyState(0x6B);
+
+
+
+			//cgi->gi1 = gi->gi1;
+			//cgi->gi2 = gi->gi2;
+			//cgi->gi3 = gi->gi3;
+			//cgi->gi4 = gi->gi4;
+			//cgi->gi5 = gi->gi5;
+			if (cgi)
+			{
+				cgi->DebugWidget = gi->DebugWidget;
+			}
+			
 			
 
 
@@ -319,7 +402,7 @@ DLLEXPORT void __cdecl hotkeyThread(void*)
 			if (hk_Num1 & 0x8000) 
 			{
 				hk_Num1_Pressed = true;
-				bRunning = false;
+				//bRunning = false;
 			}
 			
 
@@ -329,7 +412,7 @@ DLLEXPORT void __cdecl hotkeyThread(void*)
 				if (hk_Num2_Pressed == false) 
 				{
 					hk_Num2_Pressed = true;
-
+					/*
 
 
 					HANDLE hMD = GetModuleHandleA(GetProcessName(::_getpid()));
@@ -369,7 +452,7 @@ DLLEXPORT void __cdecl hotkeyThread(void*)
 
 					//printf("icv.fptr: %llx\n", icv->fptr);
 					printf("GI_MedievalDynasty.IsCheatVersion:      %llx\n", icv);
-
+					*/
 
 				}
 					
@@ -387,7 +470,6 @@ DLLEXPORT void __cdecl hotkeyThread(void*)
 				if (hk_Num3_Pressed == false)
 				{
 					hk_Num3_Pressed = true;
-
 				}
 			}
 			else
