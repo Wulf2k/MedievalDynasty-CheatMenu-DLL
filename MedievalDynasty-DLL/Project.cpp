@@ -44,14 +44,16 @@ typedef PDWORD64(WINAPI* tStaticFindObject)(DWORD64 cls, DWORD64 inout, wchar_t*
 PDWORD64 WINAPI hStaticFindObject(DWORD64 cls, DWORD64 input, wchar_t* obj, bool flag);
 tStaticFindObject StaticFindObject = NULL;
 
+/*
 typedef PDWORD64(WINAPI* tStaticConstructObject)(DWORD64 cls, DWORD64 inout);
 PDWORD64 WINAPI hStaticConstructObject(DWORD64 cls, DWORD64 inout);
 tStaticConstructObject StaticConstructObject = NULL;
+*/
 
 
 struct sMDGameFunctions
 {
-	DWORD64 StaticConstructObject;
+	//DWORD64 StaticConstructObject;
 	DWORD64 StaticFindObject;
 };
 sMDGameFunctions MDGameFunctions;
@@ -208,13 +210,14 @@ DLLEXPORT void __cdecl initialStuff(void*)
 	MDGameFunctions.StaticFindObject = ((DWORD64)hMD + offset);
 	*(PDWORD64)&StaticFindObject = MDGameFunctions.StaticFindObject;
 
+	/*
 	signature = ScanData("48 89 5C 24 10 48 89 74 24 18 55 57 41 54 41 56 41 57 48 8D AC 24 50 FF FF FF 48 81 EC B0 01 00 00 48 8B ?? ?? ?? ?? ?? 48 33 C4 48 89 85 A8 00 00 00");
 	data = ScanData(0x2000000);
 	memcpy(data.data, hMD, data.size);
 	offset = bruteForce(signature, data);
 	MDGameFunctions.StaticConstructObject = ((DWORD64)hMD + offset);
 	*(PDWORD64)&StaticConstructObject = MDGameFunctions.StaticConstructObject;
-
+	*/
 
 	UFunction* isb;
 	UFunction* idb;
