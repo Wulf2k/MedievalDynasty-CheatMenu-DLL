@@ -44,19 +44,15 @@ typedef PDWORD64(WINAPI* tStaticFindObject)(DWORD64 cls, DWORD64 inout, wchar_t*
 PDWORD64 WINAPI hStaticFindObject(DWORD64 cls, DWORD64 input, wchar_t* obj, bool flag);
 tStaticFindObject StaticFindObject = NULL;
 
-/*
-typedef PDWORD64(WINAPI* tStaticConstructObject)(DWORD64 cls, DWORD64 inout);
-PDWORD64 WINAPI hStaticConstructObject(DWORD64 cls, DWORD64 inout);
-tStaticConstructObject StaticConstructObject = NULL;
-*/
 
 
-struct sMDGameFunctions
+struct sMDGameAddresses
 {
-	//DWORD64 StaticConstructObject;
+	DWORD64 GUObjectArray;
+	DWORD64 NamePoolData;
 	DWORD64 StaticFindObject;
 };
-sMDGameFunctions MDGameFunctions;
+sMDGameAddresses MDGameAddresses;
 
 struct UFunction
 {
@@ -73,7 +69,7 @@ struct GI_MedievalDynasty_C
 	int gi3;
 	int gi4;
 	int gi5;
-	int DebugWidget; //0x1b8
+	uint32_t DebugWidget;
 	char misc2[0x3b4];
 	byte TestVersion;
 };
@@ -154,7 +150,7 @@ LPCSTR GetProcessName(DWORD PID)
 
 void Initialize()
 {
-	//_beginthread(&hotkeyThread, 0, 0);
+	_beginthread(&hotkeyThread, 0, 0);
 }
 void Cleanup()
 {
@@ -182,50 +178,264 @@ BOOL WINAPI OnConsoleSignal(DWORD dwCtrlType) {
 	}
 
 	return FALSE;
+
+
+
+
 }
+
+
+
+
+
+
+
+
+
+constexpr DWORD64 OFF_UStruct_ChildProperties = 0x50;
+constexpr DWORD64 OFF_FField_Next = 0x20;
+constexpr DWORD64 OFF_FProperty_Offset_Internal = 0x4C;
+struct FField_Layout
+{
+	void* VTable;
+	void* ClassPrivate;
+	void* OwnerA;
+	void* OwnerB;
+	void* Next;
+};
+int32_t GetNthPropertyOffset(DWORD64 uStructPtr, int index)
+{
+	DWORD64 node = *(DWORD64*)(uStructPtr + OFF_UStruct_ChildProperties);
+	for (int i = 0; i < index; i++)
+	{
+		if (node == 0)
+		{
+			printf("ERROR: ChildProperties list ended early at index %d\n", i);
+			return -1;
+		}
+		node = *(DWORD64*)(node + OFF_FField_Next);
+	}
+	return *(int32_t*)(node + OFF_FProperty_Offset_Internal);
+}
+struct FUObjectItem
+{
+	DWORD64 Object;
+	int32_t Flags;
+	int32_t ClusterRootIndex;
+	int32_t SerialNumber;
+};
+
+constexpr DWORD64 OFF_ObjObjects = 0x10;
+constexpr DWORD64 OFF_Objects_Chunks = 0x00;
+constexpr DWORD64 OFF_NumElements = 0x14;
+constexpr int      NumElementsPerChunk = 64 * 1024;
+
+DWORD64 FindLiveInstance(DWORD64 guObjectArray, DWORD64 targetClassPtr, DWORD64 excludePtr)
+{
+	DWORD64 objObjects = guObjectArray + OFF_ObjObjects;
+	DWORD64* chunks = *(DWORD64**)(objObjects + OFF_Objects_Chunks);
+	int32_t numElements = *(int32_t*)(objObjects + OFF_NumElements);
+
+	for (int i = 0; i < numElements; i++)
+	{
+		DWORD64 chunkBase = chunks[i / NumElementsPerChunk];
+		if (!chunkBase) continue;
+
+		FUObjectItem* item = (FUObjectItem*)(chunkBase + (i % NumElementsPerChunk) * sizeof(FUObjectItem));
+		DWORD64 obj = item->Object;
+		if (!obj || obj == excludePtr) continue;
+
+		DWORD64 objClass = *(DWORD64*)(obj + 0x10);
+		if (objClass == targetClassPtr)
+			return obj;
+	}
+	return 0;
+}
+
+struct FNameRaw
+{
+	uint32_t ComparisonIndex;
+	uint32_t Number;
+};
+struct FWeakObjectPtrRaw { int32_t ObjectIndex; int32_t ObjectSerialNumber; };
+
+struct FSoftObjectPtrRaw
+{
+	FWeakObjectPtrRaw WeakPtr;
+	int32_t TagAtLastTest;
+	FNameRaw AssetPathName;
+	DWORD64  SubPath_Data;
+	int32_t  SubPath_Num;
+	int32_t  SubPath_Max;
+};
+
+struct FNameEntryHeader
+{
+	uint16_t bIsWide : 1;
+	uint16_t padding : 5;
+	uint16_t Len : 10;
+};
+
+
+constexpr DWORD64 OFF_NamePool_Blocks = 0x10;
+constexpr DWORD64 OFF_FField_NamePrivate = 0x28;
+constexpr int      MaxNamePoolBlocks = 8192;
+constexpr int      NamePoolStride = 2;
+constexpr int      NamePoolBlockBits = 16;
+bool DecodeNameEntryAt(DWORD64 entryAddr, char* outBuf, size_t bufSize, int* outStrideUnits)
+{
+	FNameEntryHeader header = *(FNameEntryHeader*)entryAddr;
+	int len = header.Len;
+	if (len == 0 || len >= (int)bufSize) { *outStrideUnits = 1; return false; }
+
+	if (header.bIsWide)
+	{
+		*outStrideUnits = (2 + len * 2 + (NamePoolStride - 1)) / NamePoolStride;
+		return false;
+	}
+
+	memcpy(outBuf, (const char*)(entryAddr + 2), len);
+	outBuf[len] = 0;
+	*outStrideUnits = (2 + len + (NamePoolStride - 1)) / NamePoolStride;
+	return true;
+}
+bool DecodeFName(DWORD64 namePoolData, FNameRaw name, char* outBuf, size_t bufSize)
+{
+	DWORD64* blocks = (DWORD64*)(namePoolData + OFF_NamePool_Blocks);
+	DWORD64 blockBase = blocks[name.ComparisonIndex >> NamePoolBlockBits];
+	if (!blockBase) return false;
+
+	DWORD64 entryAddr = blockBase + (name.ComparisonIndex & 0xFFFF) * NamePoolStride;
+	int strideUnits = 0;
+	return DecodeNameEntryAt(entryAddr, outBuf, bufSize, &strideUnits);
+}
+FNameRaw FindExistingFName(DWORD64 namePoolData, const char* target)
+{
+	DWORD64* blocks = (DWORD64*)(namePoolData + OFF_NamePool_Blocks);
+	char buf[1024];
+
+	for (uint32_t blockIdx = 0; blockIdx < MaxNamePoolBlocks; blockIdx++)
+	{
+		DWORD64 blockBase = blocks[blockIdx];
+		if (!blockBase) continue;
+
+		uint32_t offsetUnits = 0;
+		DWORD64 cursor = blockBase;
+		while (cursor < blockBase + 0x20000)
+		{
+			FNameEntryHeader* header = (FNameEntryHeader*)cursor;
+			int strideUnits = 0;
+			
+			
+			if (DecodeNameEntryAt(cursor, buf, sizeof(buf), &strideUnits) && strcmp(buf, target) == 0)
+				return { (blockIdx << NamePoolBlockBits) | offsetUnits, 0 };
+
+			cursor += strideUnits * NamePoolStride;
+			offsetUnits += strideUnits;
+		}
+	}
+
+	printf("FindExistingFName: '%s' not found\n", target);
+	return { 0, 0 };
+}
+DWORD64 FindPropertyOffsetByName(DWORD64 namePoolData, DWORD64 uStructPtr, const char* propName)
+{
+	DWORD64 node = *(DWORD64*)(uStructPtr + OFF_UStruct_ChildProperties);
+	char buf[256];
+	while (node)
+	{
+		FNameRaw* name = (FNameRaw*)(node + OFF_FField_NamePrivate);  // 0x28
+		if (DecodeFName(namePoolData, *name, buf, sizeof(buf)) && strcmp(buf, propName) == 0)
+			return *(int32_t*)(node + OFF_FProperty_Offset_Internal);
+		node = *(DWORD64*)(node + OFF_FField_Next);
+	}
+	printf("FindPropertyOffsetByName: '%s' not found\n", propName);
+	return 0;
+}
+
+
+
+
+
+
+
 
 DLLEXPORT void __cdecl initialStuff(void*)
 {
-	std::this_thread::sleep_for(std::chrono::milliseconds(100));
+	std::this_thread::sleep_for(std::chrono::milliseconds(500));
 	printf("pid: %llx\n", ::_getpid());
 	printf("ProcessName: %s\n", GetProcessName(::_getpid()));
-	HANDLE hMD = GetModuleHandleA(GetProcessName(::_getpid()));
+	HANDLE hMD = 0;
+	
+	
 
-	if (!hMD)
+	while (!hMD)
 	{
-		printf("ERROR: Getting handle to game\n");
-		return;
+		hMD = GetModuleHandleA(GetProcessName(::_getpid()));
+		std::this_thread::sleep_for(std::chrono::milliseconds(500));
 	}
 
-	//GEngine?
-	//48 ? ? 05 ? ? ? ? ? ? ? ? 48 ? ? 88 ? ? 07 00 00 48 ? ? 01 ? ? 90 ? ? 01 00 00
 
 	printf("Handle: %p\n", hMD);
 	printf("Base: %llx\n", (INT64)hMD);
 	//AoB signature courtesy of SunBeam
-	ScanData signature = ScanData("48 89 5C 24 ? 48 89 74 24 ? 55 57 41 54 41 56 41 57 48 8B EC 48 83 EC ? 80 3D ? ? ? ? 00 45 0F B6 F1 49 8B F8 48 8B DA 4C 8B F9 74");
+	ScanData signature = ScanData("48 89 5C 24 ? 48 89 74 24 ? 55 57 41 54 41 ? 41 57 48 8B EC 48 83 EC ? 80 3D ? ? ? ? 00 45 0F B6 ? 49 8B ? 48 8B ? 4C 8B ? 74");
 	ScanData data = ScanData(0x2000000);
 	memcpy(data.data, hMD, data.size);
 	uintptr_t offset = bruteForce(signature, data);
-	MDGameFunctions.StaticFindObject = ((DWORD64)hMD + offset);
-	*(PDWORD64)&StaticFindObject = MDGameFunctions.StaticFindObject;
+	MDGameAddresses.StaticFindObject = ((DWORD64)hMD + offset);
+	*(PDWORD64)&StaticFindObject = MDGameAddresses.StaticFindObject;
 
-	/*
-	signature = ScanData("48 89 5C 24 10 48 89 74 24 18 55 57 41 54 41 56 41 57 48 8D AC 24 50 FF FF FF 48 81 EC B0 01 00 00 48 8B ?? ?? ?? ?? ?? 48 33 C4 48 89 85 A8 00 00 00");
-	data = ScanData(0x2000000);
+
+	
+	//GUObjectArray
+	ScanData objarrSig = ScanData("8B 45 40 85 C0 89 05 ? ? ? ? 0F 9E C1 FF C9 89 0D ? ? ? ?");
 	memcpy(data.data, hMD, data.size);
-	offset = bruteForce(signature, data);
-	MDGameFunctions.StaticConstructObject = ((DWORD64)hMD + offset);
-	*(PDWORD64)&StaticConstructObject = MDGameFunctions.StaticConstructObject;
-	*/
+	offset = bruteForce(objarrSig, data);
+	DWORD64 matchAddr = (DWORD64)hMD + offset;
+	DWORD64 dispAddr = matchAddr + 18; 
+	int32_t disp = *(int32_t*)dispAddr;
+	DWORD64 nextInstr = matchAddr + 22;
+	DWORD64 guObjArray = nextInstr + disp;
+	MDGameAddresses.GUObjectArray = guObjArray;
+	printf("GUObjectArray: %p\n", guObjArray);
+
+
+	
+
+	//NamePoolData
+	ScanData npdSig = ScanData("48 89 6C 24 48 33 ED 40 38 2D ? ? ? ? 44 8B CD 48 89 6C 24 20 48 89 6C 24 28 74 09 4C 8D 05 ? ? ? ?");
+	memcpy(data.data, hMD, data.size);
+	offset = bruteForce(npdSig, data);
+	matchAddr = (DWORD64)hMD + offset;
+	dispAddr = matchAddr + 32;
+	disp = *(int32_t*)dispAddr;
+	nextInstr = matchAddr + 36; 
+	DWORD64 namePoolData = nextInstr + disp;
+	MDGameAddresses.NamePoolData = namePoolData;
+	printf("NamePoolData: %p\n", namePoolData);
+	
+
+
 
 	UFunction* isb;
 	UFunction* idb;
 	UFunction* icv;
 	UFunction* itb;
+	UFunction* ipie;
 
 	DWORD64 ptr = 0;
-	printf("\n\nFinding the thing that should say 'Yes'....\n");
+
+
+
+
+	
+	
+
+
+
+	ptr = 0;
+	printf("\n\n********************************                 Finding the thing that should say 'Yes'....\n");
 	while (ptr == 0)
 	{
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -234,89 +444,103 @@ DLLEXPORT void __cdecl initialStuff(void*)
 	*(PDWORD64)&isb = ptr;
 
 	ptr = 0;
-	printf("Finding the things that should say 'No'....\n");
+	printf("********************************                 Finding the things that should say 'No'....\n");
 	while (ptr == 0)
 	{
-		std::this_thread::sleep_for(std::chrono::milliseconds(1));
-		ptr = (DWORD64)StaticFindObject((DWORD64)0, (DWORD64)-1, L"TDBPL_IsDevelopmentBuild", true);
-		*(PDWORD64)&idb = ptr;
-		
-		ptr = (DWORD64)StaticFindObject((DWORD64)0, (DWORD64)-1, L"TDBPL_IsTestBuild", true);
-		*(PDWORD64)&itb = ptr;
-
-		ptr = (DWORD64)StaticFindObject((DWORD64)0, (DWORD64)-1, L"/Game/Blueprints/GI_MedievalDynasty.GI_MedievalDynasty_C:IsCheatVersion", true);
-		*(PDWORD64)&icv = ptr;
+		std::this_thread::sleep_for(std::chrono::milliseconds(33));
+		ptr = (DWORD64)StaticFindObject((DWORD64)0, (DWORD64)-1, L"TDBPL_IsPlayInEditor", true);
+		*(PDWORD64)&ipie = ptr;
 	}
-	ptr = 0;
-	
 
+
+
+	DWORD64 retTrue = isb->fptr;
+	//DWORD64 retFalse = idb->fptr;
+	//printf("Making the thing that should say 'Yes' say 'No'.\n");
+	//isb->fptr = retFalse;
+	printf("********************************                 Making the things that should say 'No' say 'Yes'.\n");
+	ipie->fptr = retTrue;
+
+
+
+	
 	ptr = 0;
-	printf("Waiting for the universe to spring forth from nothingness....\n\n");
+	printf("********************************                 Waiting for the universe to spring forth from nothingness....\n\n");
 	while (ptr == 0)
 	{
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 		ptr = (DWORD64)StaticFindObject((DWORD64)0, (DWORD64)0, L"/Game/Blueprints/GI_MedievalDynasty.Default__GI_MedievalDynasty_C", false);
 	}
-
-	
 	*(PDWORD64)&gi = ptr;
-	gi->bDebugModeEnabled = 1;
-	gi->TestVersion = 1;
-	
-	DWORD64 retTrue = isb->fptr;
-	DWORD64 retFalse = idb->fptr;
-
-	printf("Making the thing that should say 'Yes' say 'No'.\n");
-	isb->fptr = retFalse;
-	printf("Making the things that should say 'No' say 'Yes'.\n");
-	icv->fptr = retTrue;
-	idb->fptr = retTrue;
-	itb->fptr = retTrue;
-
-	//printf("Asking the universe nicely for unlimited cosmic power.\n");
 
 
 
+
+
+
+	DWORD64 giClass = 0;
 	ptr = 0;
-	printf("Waiting for the copied GI.....\n\n");
+	printf("********************************                 Finding GI_MedievalDynasty_C class....\n");
 	while (ptr == 0)
 	{
 		std::this_thread::sleep_for(std::chrono::milliseconds(1));
-		ptr = (DWORD64)StaticFindObject((DWORD64)0, (DWORD64)0, L"/Engine/Transient.GameEngine_2147482624:GI_MedievalDynasty_C_2147482607", false);
+		ptr = (DWORD64)StaticFindObject((DWORD64)0, (DWORD64)-1, L"GI_MedievalDynasty_C", true);
 	}
-
-	*(PDWORD64)&cgi = ptr;
-	
-	printf("gi: %llx\n", (INT64)gi);
-	printf("cgi: %llx\n", (INT64)cgi);
-
-	cgi->bDebugModeEnabled = 1;
-	cgi->TestVersion = 1;
-
-	//_beginthread(&hotkeyThread, 0, 0);
-
+	giClass = ptr;
 
 	ptr = 0;
-	printf("Waiting for DebugWidget\n\n");
-	std::this_thread::sleep_for(std::chrono::milliseconds(7500));
-	while (gi->DebugWidget == 0)
+	printf("********************************                 Waiting for the live GI instance....\n");
+	while (ptr == 0)
 	{
-		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		std::this_thread::sleep_for(std::chrono::milliseconds(33));
+		ptr = FindLiveInstance(MDGameAddresses.GUObjectArray, giClass, (DWORD64)gi);
 	}
-	cgi->DebugWidget = gi->DebugWidget;
+	*(PDWORD64)&cgi = ptr;
+	cgi->bDebugModeEnabled = 1;
+	cgi->gi2 = 0;
+	cgi->TestVersion = 1;
+
+
+	printf("********************************                 gi: %llx\n", (INT64)gi);
+	printf("********************************                 cgi: %llx\n", (INT64)cgi);
+
+
+
+	//_beginthread(&hotkeyThread, 0, 0);
+	FNameRaw giName = *(FNameRaw*)((DWORD64)gi + 0x18);
+	char buf[256];
+	DecodeFName(namePoolData, giName, buf, sizeof(buf));
+	printf("********************************                 gi's name decodes to: %s\n", buf);
+
+
+	FNameRaw cm = FindExistingFName(namePoolData, "/Game/Blueprints/UI/CheatMenu/UI_CheatMenu.UI_CheatMenu_C");
+	printf("********************************                 FName for CheatMenu: %x\n", cm.ComparisonIndex);
+
+
+	gi->DebugWidget = cm.ComparisonIndex;
+	gi->bDebugModeEnabled = 1;
+	
+	cgi->DebugWidget = cm.ComparisonIndex;
+	cgi->bDebugModeEnabled = 1;
+
+
+
+
+	
+
 
 
 
 	int err = GetLastError();
 	if (err == 0)
 	{
-		printf("\n\nNo errors detected.\nCheat Menu should now be available after loading/starting a game and pressing ESC.\n");
+		printf("********************************                 No errors detected.\n********************************                 Cheat Menu should now be available after loading/starting a game and pressing ESC.\n");
 	}
 	else
 	{
-		printf("\n\nError %d reported.  No clue what this means, let Wulf know the details.\n", err);
+		printf("********************************                 Error %d reported.  No clue what this means, let Wulf know the details.\n", err);
 	}
-	printf("\nThis window will disappear shortly after the game exits.\n");
+	printf("********************************                 This window will disappear shortly after the game exits.\n\n\n");
 
 }
 DLLEXPORT void __cdecl hotkeyThread(void*)
@@ -382,7 +606,7 @@ DLLEXPORT void __cdecl hotkeyThread(void*)
 			//cgi->gi5 = gi->gi5;
 			if (cgi)
 			{
-				cgi->DebugWidget = gi->DebugWidget;
+				//cgi->DebugWidget = gi->DebugWidget;
 			}
 			
 			
@@ -393,7 +617,7 @@ DLLEXPORT void __cdecl hotkeyThread(void*)
 				if (hk_Enter_Pressed == false)
 				{
 					hk_Enter_Pressed = true;
-
+					
 				}
 			}
 			else
@@ -406,6 +630,7 @@ DLLEXPORT void __cdecl hotkeyThread(void*)
 			{
 				hk_Num1_Pressed = true;
 				//bRunning = false;
+				
 			}
 			
 
