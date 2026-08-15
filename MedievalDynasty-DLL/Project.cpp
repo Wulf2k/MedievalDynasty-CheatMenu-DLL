@@ -5,7 +5,6 @@
 #include "Console.h"
 #include "ScanData.h"
 
-#include <atlstr.h>
 #include <fstream>
 #include <iomanip>
 #include <process.h>
@@ -140,7 +139,10 @@ LPCSTR GetProcessName(DWORD PID)
 			{
 				CloseHandle(snapshot);
 
-				return CStringA(process.szExeFile);
+				// Static buffer: returns a valid pointer (a CStringA temp would dangle)
+				static char name[MAX_PATH];
+				WideCharToMultiByte(CP_ACP, 0, process.szExeFile, -1, name, MAX_PATH, NULL, NULL);
+				return name;
 			}
 		} while (Process32Next(snapshot, &process));
 	}
