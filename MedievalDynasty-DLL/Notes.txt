@@ -1,0 +1,51 @@
+CONTROLLER SUPPORT FIX (Steam / XInput)
+========================================
+
+Symptom
+-------
+With the DLL in the game folder, all controller support dies in-game
+(including Steam Input's emulated gamepad). Without the DLL it works.
+
+Root cause
+----------
+The DLL is a proxy: the game (UE5) dynamically loads xinput1_3.dll and the
+app directory wins, so OUR dll is loaded. It must re-export every XInput
+function (XInputGetState, XInputSetState, ...) and forward calls to the real
+System32 copy. The forwarding code lives in DllMain.cpp + xinput1_3.asm and
+the exports come from xinput1_3.def.
+
+Commit 4ae3900 ("Updated for MD 2.3.0.0") accidentally emptied the
+ModuleDefinitionFile in the Private|x64 link config, so the def file was no
+longer linked. The built xinput1_3.dll therefore exported NO XInput
+functions. The game's GetProcAddress("XInputGetState") returned NULL, UE
+disabled XInput entirely, and Steam's controller emulation (which feeds the
+game through those same XInput exports) died with it.
+
+Fix (applied 2026-08-15)
+------------------------
+One line in MedievalDynasty-DLL.vcxproj, Private|x64 <Link> section:
+
+    <ModuleDefinitionFile>xinput1_3.def</ModuleDefinitionFile>
+
+(restore the def file reference if a future project update blanks it again -
+this is the second time a game-version update has broken the build config)
+
+Verify after rebuild (Private|x64)
+----------------------------------
+1. dumpbin /exports bin\xinput1_3.dll
+   Must list: XInputGetState, XInputSetState, XInputGetCapabilities,
+   XInputGetKeystroke, XInputEnable, XInputGetBatteryInformation,
+   XInputGetDSoundAudioDeviceGuids + ordinals 100-103.
+2. Drop in Medieval_Dynasty\Binaries\Win64, launch from Steam:
+   - black console window appears (menu path intact)
+   - Steam controller works in-game; real Xbox controller works too
+     (it passes straight through to the genuine System32 xinput).
+
+Fallback if Steam ever blocks the xinput proxy again
+----------------------------------------------------
+Retarget the proxy as dwmapi.dll (UE4SS's proven approach for UE5 games:
+the engine also auto-loads dwmapi.dll, and Steam doesn't hook it).
+Requires: new dwmapi.def exporting the system dwmapi.dll functions,
+matching dwmapi.asm stubs, mImportNames/mProcs[] in DllMain.cpp,
+load_original_dll() pointing at System32\dwmapi.dll, and TargetName=dwmapi.
+Keep the whole forwarding skeleton - only the module name/exports change.
